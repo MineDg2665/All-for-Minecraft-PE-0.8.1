@@ -1,9 +1,10 @@
 <?php
+
 /*
 __PocketMine Plugin__
 name=AutoWorldsUnloader
-description=Automatically unloads worlds if there is no player in it
-version=1.0
+description=Automatically unloads worlds
+version=1.2
 author=MineDg
 class=AutoWorldsUnloader
 apiversion=12.1
@@ -12,59 +13,87 @@ apiversion=12.1
 class AutoWorldsUnloader implements Plugin {
     private $api;
     private $config;
+    private $path;
 
     public function __construct(ServerAPI $api, $server = false) {
         $this->api = $api;
     }
 
     public function init() {
-        $this->createConfig();
-        $this->api->addHandler("player.quit", [$this, "onPlayerQuit"], 10);
-        $this->api->addHandler("player.join", [$this, "onPlayerJoin"], 10);
-        $unloadInterval = $this->config->get("unload_interval", 30);
-        $this->api->schedule(600, [$this, "unloadWorlds"], [], true);
+        $this->path = $this->api->plugin->configPath($this);
+        $this->config = new Config($this->path . "config.yml", CONFIG_YAML, array(
+            "check-interval" => 60,
+            "protected-worlds" => array("world"),
+            "unload-messages" => true
+        ));
+
+        $interval = (int) $this->config->get("check-interval");
+        if ($interval < 10) {
+            $interval = 10;
+        }
+
+        $this->api->schedule($interval * 20, array($this, "checkWorlds"), array(), true);
+        $this->api->addHandler("player.quit", array($this, "onPlayerQuit"), 15);
     }
 
-    private function createConfig() {
-        $this->config = new Config($this->api->plugin->configPath($this) . "config.yml", CONFIG_YAML, [
-            "excluded_worlds" => [],
-            "unload_interval" => 30
-        ]);
+    public function onPlayerQuit($data) {
+        $this->api->schedule(40, array($this, "checkWorlds"), array(), false);
     }
 
-    public function unloadWorlds() {
-        foreach ($this->api->level->levels as $level) {
-            if (in_array($level->getName(), $this->config->get("excluded_worlds"))) {
+    public function checkWorlds() {
+        $defaultLevel = $this->api->level->getDefault();
+        $protectedWorlds = $this->config->get("protected-worlds");
+
+        if (!is_array($protectedWorlds)) {
+            $protectedWorlds = array("world");
+        }
+
+        $levels = $this->api->level->getLevels();
+        $toUnload = array();
+
+        foreach ($levels as $level) {
+            if ($level === $defaultLevel) {
                 continue;
             }
 
-            $players = $this->api->player->getAll();
-            $inWorld = false;
+            $worldName = $level->getName();
 
-            foreach ($players as $player) {
-                if ($player->level->getName() === $level->getName()) {
-                    $inWorld = true;
-                    break;
-                }
+            if (in_array($worldName, $protectedWorlds)) {
+                continue;
             }
 
-            if (!$inWorld) {
-                $levelObject = $this->api->level->get($level->getName());
-                if ($levelObject !== null) {
-                    $this->api->level->unloadLevel($levelObject);
-                    //console("[AutoWorldsUnloader] World '{$level->getName()}' has been unloaded.");
-                }
+            $players = $level->getPlayers();
+            if (count($players) === 0) {
+                $toUnload[] = $level;
             }
+        }
+
+        foreach ($toUnload as $level) {
+            $this->unloadWorld($level);
         }
     }
 
-    public function onPlayerQuit($data, $event) {
-        $this->unloadWorlds();
+    private function unloadWorld($level) {
+        $worldName = $level->getName();
+
+        if (count($level->getPlayers()) > 0) {
+            return false;
+        }
+
+        $level->save();
+
+        $result = $this->api->level->unloadLevel($level);
+
+        if ($result === true) {
+            if ($this->config->get("unload-messages") === true) {
+                console("[AutoWorldsUnloader] World '$worldName' has been unloaded.");
+            }
+            return true;
+        }
+
+        return false;
     }
 
-    public function onPlayerJoin($data, $event) {
-        $this->unloadWorlds();
+    public function __destruct() {
     }
-
-    public function __destruct() {}
 }
