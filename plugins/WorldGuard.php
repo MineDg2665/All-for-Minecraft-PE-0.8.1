@@ -19,8 +19,7 @@ apiversion=12.1
 class WorldGuard implements Plugin {
     private $api;
     private $db;
-    private $pos1;
-    private $pos2;
+    private $positions = [];
     private $path;
     
     public function __construct(ServerAPI $api, $server = false) {
@@ -56,7 +55,6 @@ class WorldGuard implements Plugin {
         $this->api->addHandler("player.block.touch", array($this, "handleBlockTouch"), 0);
         $this->api->addHandler("player.block.place", array($this, "handleBlockPlace"), 0);
         $this->api->addHandler("player.block.break", array($this, "handleBlockBreak"), 0);
-        $this->api->addHandler("player.interact", array($this, "handlePlayerInteract"), 0);
         $this->api->addHandler("player.attack", array($this, "handlePlayerAttack"), 0);
         $this->api->ban->cmdWhitelist("rg");
     }
@@ -125,18 +123,18 @@ class WorldGuard implements Plugin {
     }
     
     private function setPos1($issuer) {
-        $x = (int) floor($issuer->entity->x);
-        $y = (int) floor($issuer->entity->y) - 1;
-        $z = (int) floor($issuer->entity->z);
-        $this->pos1 = [$x, $y, $z];
+        $x = (int) round($issuer->entity->x);
+        $y = (int) round($issuer->entity->y);
+        $z = (int) round($issuer->entity->z);
+        $this->positions[$issuer->username]['pos1'] = [$x, $y, $z];
         return "Position 1 set to $x, $y, $z.";
     }
     
     private function setPos2($issuer) {
-        $x = (int) floor($issuer->entity->x);
-        $y = (int) floor($issuer->entity->y) - 1;
-        $z = (int) floor($issuer->entity->z);
-        $this->pos2 = [$x, $y, $z];
+        $x = (int) round($issuer->entity->x);
+        $y = (int) round($issuer->entity->y);
+        $z = (int) round($issuer->entity->z);
+        $this->positions[$issuer->username]['pos2'] = [$x, $y, $z];
         return "Position 2 set to $x, $y, $z.";
     }
     
@@ -160,9 +158,23 @@ class WorldGuard implements Plugin {
         if ($parent['owner'] !== $issuer->username) return "You are not the owner of region '$parentName'.";
         if ($child['world'] !== $parent['world']) return "Regions must be in the same world.";
         
-        if ($child['x1'] < $parent['x1'] || $child['x2'] > $parent['x2'] ||
-            $child['y1'] < $parent['y1'] || $child['y2'] > $parent['y2'] ||
-            $child['z1'] < $parent['z1'] || $child['z2'] > $parent['z2']) {
+        $cMinX = min($child['x1'], $child['x2']);
+        $cMaxX = max($child['x1'], $child['x2']);
+        $cMinY = min($child['y1'], $child['y2']);
+        $cMaxY = max($child['y1'], $child['y2']);
+        $cMinZ = min($child['z1'], $child['z2']);
+        $cMaxZ = max($child['z1'], $child['z2']);
+        
+        $pMinX = min($parent['x1'], $parent['x2']);
+        $pMaxX = max($parent['x1'], $parent['x2']);
+        $pMinY = min($parent['y1'], $parent['y2']);
+        $pMaxY = max($parent['y1'], $parent['y2']);
+        $pMinZ = min($parent['z1'], $parent['z2']);
+        $pMaxZ = max($parent['z1'], $parent['z2']);
+        
+        if ($cMinX < $pMinX || $cMaxX > $pMaxX ||
+            $cMinY < $pMinY || $cMaxY > $pMaxY ||
+            $cMinZ < $pMinZ || $cMaxZ > $pMaxZ) {
             return "Child region must be completely inside parent region.";
         }
         
@@ -237,15 +249,21 @@ class WorldGuard implements Plugin {
     }
     
     private function isInsideRegion($x, $y, $z, $region) {
-        return $x >= $region['x1'] && $x <= $region['x2'] &&
-               $y >= $region['y1'] && $y <= $region['y2'] &&
-               $z >= $region['z1'] && $z <= $region['z2'];
+        $minX = min($region['x1'], $region['x2']);
+        $maxX = max($region['x1'], $region['x2']);
+        $minY = min($region['y1'], $region['y2']);
+        $maxY = max($region['y1'], $region['y2']);
+        $minZ = min($region['z1'], $region['z2']);
+        $maxZ = max($region['z1'], $region['z2']);
+        return $x >= $minX && $x <= $maxX &&
+               $y >= $minY && $y <= $maxY &&
+               $z >= $minZ && $z <= $maxZ;
     }
     
     private function getRegionAtPosition($x, $y, $z, $world) {
-        $bx = (int) floor($x);
-        $by = (int) floor($y);
-        $bz = (int) floor($z);
+        $bx = (int) round($x);
+        $by = (int) round($y);
+        $bz = (int) round($z);
         
         $allRegions = $this->getAllRegionsInWorld($world);
         
@@ -312,9 +330,9 @@ class WorldGuard implements Plugin {
     }
     
     private function regionsAtCommand(Player $issuer, $params) {
-        $x = (int) floor($issuer->entity->x);
-        $y = (int) floor($issuer->entity->y);
-        $z = (int) floor($issuer->entity->z);
+        $x = (int) round($issuer->entity->x);
+        $y = (int) round($issuer->entity->y);
+        $z = (int) round($issuer->entity->z);
         $world = $issuer->entity->level->getName();
         
         $allRegions = $this->getAllRegionsInWorld($world);
@@ -353,16 +371,27 @@ class WorldGuard implements Plugin {
             return "Usage: /rg claim <region>";
         }
         
-        if (!isset($this->pos1) || !isset($this->pos2)) {
+        $username = $issuer->username;
+        if (!isset($this->positions[$username]['pos1']) || !isset($this->positions[$username]['pos2'])) {
             return "Please set positions 1 and 2.";
         }
         
-        $x1 = min($this->pos1[0], $this->pos2[0]);
-        $y1 = min($this->pos1[1], $this->pos2[1]);
-        $z1 = min($this->pos1[2], $this->pos2[2]);
-        $x2 = max($this->pos1[0], $this->pos2[0]);
-        $y2 = max($this->pos1[1], $this->pos2[1]);
-        $z2 = max($this->pos1[2], $this->pos2[2]);
+        $pos1 = $this->positions[$username]['pos1'];
+        $pos2 = $this->positions[$username]['pos2'];
+        
+        $x1 = $pos1[0];
+        $y1 = $pos1[1];
+        $z1 = $pos1[2];
+        $x2 = $pos2[0];
+        $y2 = $pos2[1];
+        $z2 = $pos2[2];
+        
+        $nMinX = min($x1, $x2);
+        $nMaxX = max($x1, $x2);
+        $nMinY = min($y1, $y2);
+        $nMaxY = max($y1, $y2);
+        $nMinZ = min($z1, $z2);
+        $nMaxZ = max($z1, $z2);
         
         $worldEscaped = SQLite3::escapeString($worldName);
         $result = $this->db->query("SELECT * FROM regions WHERE world = '$worldEscaped';");
@@ -370,27 +399,27 @@ class WorldGuard implements Plugin {
         $insideRegions = [];
         
         while ($existingRegion = $result->fetchArray(SQLITE3_ASSOC)) {
-            $eMinX = $existingRegion['x1'];
-            $eMaxX = $existingRegion['x2'];
-            $eMinY = $existingRegion['y1'];
-            $eMaxY = $existingRegion['y2'];
-            $eMinZ = $existingRegion['z1'];
-            $eMaxZ = $existingRegion['z2'];
+            $eMinX = min($existingRegion['x1'], $existingRegion['x2']);
+            $eMaxX = max($existingRegion['x1'], $existingRegion['x2']);
+            $eMinY = min($existingRegion['y1'], $existingRegion['y2']);
+            $eMaxY = max($existingRegion['y1'], $existingRegion['y2']);
+            $eMinZ = min($existingRegion['z1'], $existingRegion['z2']);
+            $eMaxZ = max($existingRegion['z1'], $existingRegion['z2']);
             
-            if (!($x2 < $eMinX || $x1 > $eMaxX ||
-                  $y2 < $eMinY || $y1 > $eMaxY ||
-                  $z2 < $eMinZ || $z1 > $eMaxZ)) {
+            if (!($nMaxX < $eMinX || $nMinX > $eMaxX ||
+                  $nMaxY < $eMinY || $nMinY > $eMaxY ||
+                  $nMaxZ < $eMinZ || $nMinZ > $eMaxZ)) {
                 
-                if ($x1 >= $eMinX && $x2 <= $eMaxX &&
-                    $y1 >= $eMinY && $y2 <= $eMaxY &&
-                    $z1 >= $eMinZ && $z2 <= $eMaxZ) {
+                if ($nMinX >= $eMinX && $nMaxX <= $eMaxX &&
+                    $nMinY >= $eMinY && $nMaxY <= $eMaxY &&
+                    $nMinZ >= $eMinZ && $nMaxZ <= $eMaxZ) {
                     $insideRegions[] = $existingRegion['name'];
                     continue;
                 }
                 
-                if ($eMinX >= $x1 && $eMaxX <= $x2 &&
-                    $eMinY >= $y1 && $eMaxY <= $y2 &&
-                    $eMinZ >= $z1 && $eMaxZ <= $z2) {
+                if ($eMinX >= $nMinX && $eMaxX <= $nMaxX &&
+                    $eMinY >= $nMinY && $eMaxY <= $nMaxY &&
+                    $eMinZ >= $nMinZ && $eMaxZ <= $nMaxZ) {
                     $insideRegions[] = $existingRegion['name'];
                     continue;
                 }
@@ -413,10 +442,9 @@ class WorldGuard implements Plugin {
         
         $this->db->exec("INSERT INTO regions (name, owner, members, world, x1, y1, z1, x2, y2, z2, pvp, use_flag, break_flag) VALUES ('$regionNameEscaped', '$ownerEscaped', '', '$worldEscaped', $x1, $y1, $z1, $x2, $y2, $z2, 1, 0, 0);");
         
-        unset($this->pos1);
-        unset($this->pos2);
+        unset($this->positions[$username]);
         
-        $volume = ($x2 - $x1 + 1) * ($y2 - $y1 + 1) * ($z2 - $z1 + 1);
+        $volume = ($nMaxX - $nMinX + 1) * ($nMaxY - $nMinY + 1) * ($nMaxZ - $nMinZ + 1);
         $message = "Region '$regionName' claimed ($x1,$y1,$z1 - $x2,$y2,$z2) Volume: $volume blocks.";
         if (!empty($insideRegions)) {
             $message .= "\nRegion is inside: " . implode(", ", $insideRegions);
@@ -464,9 +492,9 @@ class WorldGuard implements Plugin {
         }
         
         $region = $this->getRegionAtPosition(
-            $issuer->entity->x, 
-            $issuer->entity->y, 
-            $issuer->entity->z, 
+            $issuer->entity->x,
+            $issuer->entity->y,
+            $issuer->entity->z,
             $issuer->entity->level->getName()
         );
         
@@ -487,7 +515,8 @@ class WorldGuard implements Plugin {
                "Owner: {$region['owner']}\n" .
                "Members: " . ($region['members'] ?: "None") . "\n" .
                "World: {$region['world']}\n" .
-               "Coordinates: ({$region['x1']}, {$region['y1']}, {$region['z1']}) - ({$region['x2']}, {$region['y2']}, {$region['z2']})\n" .
+               "Pos1: ({$region['x1']}, {$region['y1']}, {$region['z1']})\n" .
+               "Pos2: ({$region['x2']}, {$region['y2']}, {$region['z2']})\n" .
                "Volume: $volume blocks\n" .
                "$parentInfo\n" .
                "Flags: pvp=$pvp, use=$use, break=$brk";
@@ -656,11 +685,14 @@ class WorldGuard implements Plugin {
     public function handleBlockTouch($data, $event) {
         $player = $data["player"];
         $target = $data["target"];
+        $type = $data["type"];
         $region = $this->getRegionAtPosition($target->x, $target->y, $target->z, $player->level->getName());
         
         if ($region && !$this->isPlayerAllowed($player->username, $region)) {
-            if (!$region['use_flag']) {
-                $player->sendChat("[WorldGuard] You cannot use blocks in region '{$region['name']}'.");
+            if ($type === "break" && !$region['break_flag']) {
+                return false;
+            }
+            if ($type === "place" && !$region['use_flag'] && !$region['break_flag']) {
                 return false;
             }
         }
@@ -669,12 +701,11 @@ class WorldGuard implements Plugin {
     
     public function handleBlockPlace($data, $event) {
         $player = $data["player"];
-        $target = $data["target"];
-        $region = $this->getRegionAtPosition($target->x, $target->y, $target->z, $player->level->getName());
+        $block = $data["block"];
+        $region = $this->getRegionAtPosition($block->x, $block->y, $block->z, $player->level->getName());
         
         if ($region && !$this->isPlayerAllowed($player->username, $region)) {
             if (!$region['break_flag']) {
-                $player->sendChat("[WorldGuard] You cannot place blocks in region '{$region['name']}'.");
                 return false;
             }
         }
@@ -688,25 +719,7 @@ class WorldGuard implements Plugin {
         
         if ($region && !$this->isPlayerAllowed($player->username, $region)) {
             if (!$region['break_flag']) {
-                $player->sendChat("[WorldGuard] You cannot break blocks in region '{$region['name']}'.");
                 return false;
-            }
-        }
-        return true;
-    }
-    
-    public function handlePlayerInteract($data, $event) {
-        $player = $data["player"];
-        $target = $data["target"];
-        
-        if ($target instanceof Block) {
-            $region = $this->getRegionAtPosition($target->x, $target->y, $target->z, $player->level->getName());
-            
-            if ($region && !$this->isPlayerAllowed($player->username, $region)) {
-                if (!$region['use_flag']) {
-                    $player->sendChat("[WorldGuard] You cannot interact in region '{$region['name']}'.");
-                    return false;
-                }
             }
         }
         return true;
