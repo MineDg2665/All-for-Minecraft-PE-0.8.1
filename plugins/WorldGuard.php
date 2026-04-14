@@ -3,13 +3,14 @@
 __PocketMine Plugin__
 name=WorldGuard
 description=Plugin for managing private regions.
-version=1.4
+version=1.5
 author=MineDg
 class=WorldGuard
 apiversion=12.1
 */
 
-/* 
+/*
+1.5 * I'm stupid sorry((( Flags edited
 1.4 * Some fixes
 1.3 * Added subregions
 1.2 * Added flags 
@@ -43,8 +44,9 @@ class WorldGuard implements Plugin {
             z2 INTEGER,
             parent TEXT DEFAULT NULL,
             pvp INTEGER DEFAULT 1,
-            use_flag INTEGER DEFAULT 0,
             break_flag INTEGER DEFAULT 0,
+            place_flag INTEGER DEFAULT 0,
+            interact_flag INTEGER DEFAULT 0,
             FOREIGN KEY (parent) REFERENCES regions(name) ON DELETE SET NULL
         );");
         
@@ -53,8 +55,6 @@ class WorldGuard implements Plugin {
         $this->api->console->register("rg", "[subcmd] ...", array($this, "command"));
         $this->api->console->alias("region", "rg");
         $this->api->addHandler("player.block.touch", array($this, "handleBlockTouch"), 0);
-        $this->api->addHandler("player.block.place", array($this, "handleBlockPlace"), 0);
-        $this->api->addHandler("player.block.break", array($this, "handleBlockBreak"), 0);
         $this->api->addHandler("player.attack", array($this, "handlePlayerAttack"), 0);
         $this->api->ban->cmdWhitelist("rg");
     }
@@ -440,7 +440,7 @@ class WorldGuard implements Plugin {
             return "Region '$regionName' already exists.";
         }
         
-        $this->db->exec("INSERT INTO regions (name, owner, members, world, x1, y1, z1, x2, y2, z2, pvp, use_flag, break_flag) VALUES ('$regionNameEscaped', '$ownerEscaped', '', '$worldEscaped', $x1, $y1, $z1, $x2, $y2, $z2, 1, 0, 0);");
+        $this->db->exec("INSERT INTO regions (name, owner, members, world, x1, y1, z1, x2, y2, z2, pvp, break_flag, place_flag, interact_flag) VALUES ('$regionNameEscaped', '$ownerEscaped', '', '$worldEscaped', $x1, $y1, $z1, $x2, $y2, $z2, 1, 0, 0, 0);");
         
         unset($this->positions[$username]);
         
@@ -507,8 +507,9 @@ class WorldGuard implements Plugin {
     private function formatRegionInfo($region) {
         $parentInfo = $region['parent'] ? "Parent: {$region['parent']}" : "Parent: None";
         $pvp = $region['pvp'] ? "true" : "false";
-        $use = $region['use_flag'] ? "true" : "false";
         $brk = $region['break_flag'] ? "true" : "false";
+        $place = $region['place_flag'] ? "true" : "false";
+        $interact = $region['interact_flag'] ? "true" : "false";
         $volume = $this->getRegionVolume($region);
         
         return "Region: {$region['name']}\n" .
@@ -519,12 +520,12 @@ class WorldGuard implements Plugin {
                "Pos2: ({$region['x2']}, {$region['y2']}, {$region['z2']})\n" .
                "Volume: $volume blocks\n" .
                "$parentInfo\n" .
-               "Flags: pvp=$pvp, use=$use, break=$brk";
+               "Flags: pvp=$pvp, break=$brk, place=$place, interact=$interact";
     }
     
     private function flagCommand(Player $issuer, $params) {
         if (count($params) < 3) {
-            return "Usage: /rg flag <region> <flag> <value>\nValid flags: pvp, use, break";
+            return "Usage: /rg flag <region> <flag> <value>\nValid flags: pvp, break, place, interact";
         }
         
         $regionName = array_shift($params);
@@ -532,13 +533,14 @@ class WorldGuard implements Plugin {
         $value = strtolower(array_shift($params));
         
         $flagMap = [
-            "pvp" => "pvp",
-            "use" => "use_flag",
-            "break" => "break_flag"
+            "pvp"      => "pvp",
+            "break"    => "break_flag",
+            "place"    => "place_flag",
+            "interact" => "interact_flag"
         ];
         
         if (!isset($flagMap[$flag])) {
-            return "Invalid flag. Valid flags: pvp, use, break.";
+            return "Invalid flag. Valid flags: pvp, break, place, interact.";
         }
         
         $validValues = ["true", "false", "on", "off", "1", "0"];
@@ -686,39 +688,20 @@ class WorldGuard implements Plugin {
         $player = $data["player"];
         $target = $data["target"];
         $type = $data["type"];
+        
         $region = $this->getRegionAtPosition($target->x, $target->y, $target->z, $player->level->getName());
         
-        if ($region && !$this->isPlayerAllowed($player->username, $region)) {
+        if ($region && !$this->isPlayerAllowed($player->iusername, $region)) {
+            if ($region['interact_flag']) {
+                $player->sendChat("[WorldGuard] You are not allowed to interact in the '{$region['name']}' region.");
+                return false;
+            }
             if ($type === "break" && !$region['break_flag']) {
+                $player->sendChat("[WorldGuard] You are not allowed to break blocks in the '{$region['name']}' region.");
                 return false;
             }
-            if ($type === "place" && !$region['use_flag'] && !$region['break_flag']) {
-                return false;
-            }
-        }
-        return true;
-    }
-    
-    public function handleBlockPlace($data, $event) {
-        $player = $data["player"];
-        $block = $data["block"];
-        $region = $this->getRegionAtPosition($block->x, $block->y, $block->z, $player->level->getName());
-        
-        if ($region && !$this->isPlayerAllowed($player->username, $region)) {
-            if (!$region['break_flag']) {
-                return false;
-            }
-        }
-        return true;
-    }
-    
-    public function handleBlockBreak($data, $event) {
-        $player = $data["player"];
-        $target = $data["target"];
-        $region = $this->getRegionAtPosition($target->x, $target->y, $target->z, $player->level->getName());
-        
-        if ($region && !$this->isPlayerAllowed($player->username, $region)) {
-            if (!$region['break_flag']) {
+            if ($type === "place" && !$region['place_flag']) {
+                $player->sendChat("[WorldGuard] You are not allowed to place blocks in the '{$region['name']}' region.");
                 return false;
             }
         }
