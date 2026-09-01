@@ -4,7 +4,7 @@
   __PocketMine Plugin__
   name=TreeChopper
   description=TreeChopper
-  version=1.2
+  version=1.3
   author=tschrock(modifed by gamehero)/tema1d/MineDg(update to API 12.2)
   class=TreeChopper
   apiversion=12.2
@@ -90,7 +90,7 @@ class TreeChopper implements Plugin {
 
 
 
-                        if ($this->api->dhandle("player.block.touch", array("type" => "break", "player" => $player, "target" => $target, "item" => $item)) === false) {
+                        if ($this->api->dhandle("player.block.touch", array("type" => "break", "player" => $player, "target" => $target, "item" => $item, "treecrop" => true)) === false) {
                             if ($this->api->dhandle("player.block.break.bypass", array("player" => $player, "target" => $target, "item" => $item)) !== true) {
                                 return $this->cancelAction($target, $player);
                             }
@@ -102,7 +102,7 @@ class TreeChopper implements Plugin {
                             }
                         }
                         
-                        if ($this->api->dhandle("player.block.break", array("player" => $player, "target" => $target, "item" => $item)) !== false) {
+                        if ($this->api->dhandle("player.block.break", array("player" => $player, "target" => $target, "item" => $item, "treecrop" => true)) !== false) {
                             $drops = $target->getDrops($item, $player);
 							$this->destroyLeavesNearbyLog($target, 0, 0, $target, $player, $item);
                             if ($target->onBreak($item, $player) === false) {
