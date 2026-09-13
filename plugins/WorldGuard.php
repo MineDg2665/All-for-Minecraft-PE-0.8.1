@@ -3,7 +3,7 @@
 __PocketMine Plugin__
 name=WorldGuard
 description=Plugin for managing private regions
-version=1.6
+version=1.7
 author=MineDg
 class=WorldGuard
 apiversion=12.1,12.2
@@ -15,6 +15,7 @@ class WorldGuard implements Plugin {
     private $positions = [];
     private $path;
     private $interactableBlocks = [26,46,54,58,61,62,63,64,68,71,92,96,107,245,247];
+    private $regionsCache = [];
     
     public function __construct(ServerAPI $api, $server = false) {
         $this->api = $api;
@@ -50,6 +51,7 @@ class WorldGuard implements Plugin {
         $this->api->console->register("rg", "[subcmd] ...", array($this, "command"));
         $this->api->console->alias("region", "rg");
         $this->api->addHandler("player.block.touch", array($this, "handleBlockTouch"), 0);
+        $this->api->addHandler("player.block.place", array($this, "handleBlockPlace"), 0);
         $this->api->addHandler("player.block.activate", array($this, "handleBlockActivate"), 0);
         $this->api->addHandler("player.attack", array($this, "handlePlayerAttack"), 0);
         $this->api->ban->cmdWhitelist("rg");
@@ -163,6 +165,9 @@ class WorldGuard implements Plugin {
             if ($current['parent']) {
                 if ($allRegions === null) {
                     $allRegions = $worldName ? $this->getAllRegionsInWorld($worldName) : $this->getAllRegionsInWorld($current['world']);
+                    if ($allRegions === null) {
+                        return false;
+                    }
                 }
                 $parentFound = false;
                 foreach ($allRegions as $r) {
@@ -180,13 +185,25 @@ class WorldGuard implements Plugin {
         return false;
     }
     
+    private function invalidateRegionCache() {
+        $this->regionsCache = [];
+    }
+
     private function getAllRegionsInWorld($world) {
+        if (isset($this->regionsCache[$world])) {
+            return $this->regionsCache[$world];
+        }
         $worldEscaped = SQLite3::escapeString($world);
         $result = $this->db->query("SELECT * FROM regions WHERE world = '$worldEscaped';");
+        if (!($result instanceof SQLite3Result)) {
+            return null;
+        }
         $allRegions = [];
         while ($region = $result->fetchArray(SQLITE3_ASSOC)) {
             $allRegions[] = $region;
         }
+        $result->finalize();
+        $this->regionsCache[$world] = $allRegions;
         return $allRegions;
     }
     
@@ -209,6 +226,7 @@ class WorldGuard implements Plugin {
         
         $allRegions = $this->getAllRegionsInWorld($world);
         
+        if ($allRegions === null) return false;
         if (empty($allRegions)) return null;
         
         $containingRegions = [];
@@ -287,51 +305,91 @@ class WorldGuard implements Plugin {
         return false;
     }
     
+    private function touchDenied($player, $x, $y, $z, $worldName, $type, $blockId, $targetActivable) {
+        $region = $this->getRegionAtPosition($x, $y, $z, $worldName);
+
+        if ($region === false) {
+            $player->sendChat("[WorldGuard] Protection check failed, action blocked.");
+            return true;
+        }
+
+        if (!$region) {
+            return false;
+        }
+
+        if ($this->isPlayerAllowed($player->username, $region, $worldName)) {
+            return false;
+        }
+
+        if ($type === "break") {
+            if (!$region['break_flag']) {
+                $player->sendChat("[WorldGuard] You are not allowed to break blocks in the '{$region['name']}' region.");
+                return true;
+            }
+        } elseif ($type === "place") {
+            $isInteraction = ($targetActivable === true) || in_array($blockId, $this->interactableBlocks);
+            if ($isInteraction) {
+                if (!$region['interact_flag']) {
+                    $player->sendChat("[WorldGuard] You are not allowed to interact in the '{$region['name']}' region.");
+                    return true;
+                }
+            } elseif (!$region['place_flag']) {
+                $player->sendChat("[WorldGuard] You are not allowed to place blocks in the '{$region['name']}' region.");
+                return true;
+            }
+        } else {
+            if (in_array($blockId, $this->interactableBlocks)) {
+                if (!$region['interact_flag']) {
+                    $player->sendChat("[WorldGuard] You are not allowed to interact in the '{$region['name']}' region.");
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     public function handleBlockTouch($data, $event) {
         $player = $data["player"];
         $target = $data["target"];
         $type = $data["type"];
-        $blockId = $target->getID();
 
         if ($this->api->ban->isOP($player->username) === true) return true;
 
         $worldName = $player->level->getName();
 
-        $region = $this->getRegionAtPosition(
-            (int) floor($target->x),
-            (int) floor($target->y),
-            (int) floor($target->z),
-            $worldName
-        );
+        if ($this->touchDenied($player, (int) floor($target->x), (int) floor($target->y), (int) floor($target->z), $worldName, $type, $target->getID(), $target->isActivable)) {
+            return false;
+        }
 
-        if ($region) {
-            if ($this->isPlayerAllowed($player->username, $region, $worldName)) {
-                return true;
+        if ($type === "place" && isset($data["block"])) {
+            $block = $data["block"];
+            if ($this->touchDenied($player, (int) floor($block->x), (int) floor($block->y), (int) floor($block->z), $worldName, "place", $block->getID(), $block->isActivable)) {
+                return false;
             }
+        }
 
-            if ($type === "break") {
-                if (!$region['break_flag']) {
-                    $player->sendChat("[WorldGuard] You are not allowed to break blocks in the '{$region['name']}' region.");
-                    return false;
-                }
-            } elseif ($type === "place") {
-                $isInteraction = ($target->isActivable === true) || in_array($blockId, $this->interactableBlocks);
-                if ($isInteraction) {
-                    if (!$region['interact_flag']) {
-                        $player->sendChat("[WorldGuard] You are not allowed to interact in the '{$region['name']}' region.");
-                        return false;
-                    }
-                } elseif (!$region['place_flag']) {
-                    $player->sendChat("[WorldGuard] You are not allowed to place blocks in the '{$region['name']}' region.");
-                    return false;
-                }
-            } else {
-                if (in_array($blockId, $this->interactableBlocks)) {
-                    if (!$region['interact_flag']) {
-                        $player->sendChat("[WorldGuard] You are not allowed to interact in the '{$region['name']}' region.");
-                        return false;
-                    }
-                }
+        return true;
+    }
+
+    public function handleBlockPlace($data, $event) {
+        $player = $data["player"];
+
+        if ($this->api->ban->isOP($player->username) === true) return true;
+
+        $worldName = $player->level->getName();
+
+        if (isset($data["block"])) {
+            $block = $data["block"];
+            if ($this->touchDenied($player, (int) floor($block->x), (int) floor($block->y), (int) floor($block->z), $worldName, "place", $block->getID(), $block->isActivable)) {
+                return false;
+            }
+        }
+
+        if (isset($data["target"])) {
+            $target = $data["target"];
+            if ($this->touchDenied($player, (int) floor($target->x), (int) floor($target->y), (int) floor($target->z), $worldName, "place", $target->getID(), $target->isActivable)) {
+                return false;
             }
         }
 
@@ -355,6 +413,11 @@ class WorldGuard implements Plugin {
             (int) floor($target->z),
             $worldName
         );
+
+        if ($region === false) {
+            $player->sendChat("[WorldGuard] Protection check failed, action blocked.");
+            return false;
+        }
 
         if ($region) {
             if ($this->isPlayerAllowed($player->username, $region, $worldName)) {
@@ -391,6 +454,10 @@ class WorldGuard implements Plugin {
                 (int) floor($target->z),
                 $tWorldName
             );
+
+            if ($region1 === false || $region2 === false) {
+                return false;
+            }
 
             if ($region1) {
                 if (!$this->isPlayerAllowed($player->username, $region1, $pWorldName)) {
@@ -494,6 +561,7 @@ class WorldGuard implements Plugin {
         }
         
         $this->db->exec("INSERT INTO regions (name, owners, members, world, x1, y1, z1, x2, y2, z2, pvp, break_flag, place_flag, interact_flag) VALUES ('$regionNameEscaped', '$ownerEscaped', '', '$worldEscaped', $x1, $y1, $z1, $x2, $y2, $z2, 1, 0, 0, 0);");
+        $this->invalidateRegionCache();
         
         unset($this->positions[$username]);
         
@@ -550,6 +618,7 @@ class WorldGuard implements Plugin {
         }
         
         $this->db->exec("DELETE FROM regions WHERE name = '$regionNameEscaped';");
+        $this->invalidateRegionCache();
         return "Region '$regionName' removed.";
     }
     
@@ -635,6 +704,7 @@ class WorldGuard implements Plugin {
         
         $columnName = $flagMap[$flag];
         $this->db->exec("UPDATE regions SET $columnName = $intValue WHERE name = '$regionNameEscaped';");
+        $this->invalidateRegionCache();
         
         return "Flag '$flag' set to " . ($intValue ? "true" : "false") . " for region '$regionName'.";
     }
@@ -676,6 +746,7 @@ class WorldGuard implements Plugin {
         $owners[] = trim($newOwner);
         $ownersStr = SQLite3::escapeString(implode(',', $owners));
         $this->db->exec("UPDATE regions SET owners = '$ownersStr' WHERE name = '$regionNameEscaped';");
+        $this->invalidateRegionCache();
         return "Added $newOwner as an owner to region '$regionName'.";
     }
     
@@ -710,6 +781,7 @@ class WorldGuard implements Plugin {
         
         $ownersStr = SQLite3::escapeString(implode(',', $newOwners));
         $this->db->exec("UPDATE regions SET owners = '$ownersStr' WHERE name = '$regionNameEscaped';");
+        $this->invalidateRegionCache();
         return "Removed $ownerToRemove from owners of region '$regionName'.";
     }
     
@@ -739,6 +811,7 @@ class WorldGuard implements Plugin {
         $members[] = trim($newMember);
         $membersStr = SQLite3::escapeString(implode(',', $members));
         $this->db->exec("UPDATE regions SET members = '$membersStr' WHERE name = '$regionNameEscaped';");
+        $this->invalidateRegionCache();
         return "Added $newMember as a member to region '$regionName'.";
     }
     
@@ -773,6 +846,7 @@ class WorldGuard implements Plugin {
         
         $membersStr = SQLite3::escapeString(implode(',', $newMembers));
         $this->db->exec("UPDATE regions SET members = '$membersStr' WHERE name = '$regionNameEscaped';");
+        $this->invalidateRegionCache();
         return "Removed $memberToRemove from members of region '$regionName'.";
     }
     
@@ -819,6 +893,7 @@ class WorldGuard implements Plugin {
         }
         
         $this->db->exec("UPDATE regions SET parent = '$parentName' WHERE name = '$childName';");
+        $this->invalidateRegionCache();
         return "Parent of '$childName' set to '$parentName'.";
     }
     
@@ -838,6 +913,7 @@ class WorldGuard implements Plugin {
         if (!$region['parent']) return "Region '$regionName' doesn't have a parent.";
         
         $this->db->exec("UPDATE regions SET parent = NULL WHERE name = '$regionName';");
+        $this->invalidateRegionCache();
         return "Parent removed from region '$regionName'.";
     }
     
@@ -867,6 +943,9 @@ class WorldGuard implements Plugin {
         $world = $issuer->entity->level->getName();
         
         $allRegions = $this->getAllRegionsInWorld($world);
+        if ($allRegions === null) {
+            $allRegions = [];
+        }
         
         $containingRegions = [];
         foreach ($allRegions as $region) {
